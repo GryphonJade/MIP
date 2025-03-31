@@ -1,0 +1,1 @@
+docker load -i ../final_neural_lns_env.tar

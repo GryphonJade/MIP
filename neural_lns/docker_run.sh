@@ -1,0 +1,1 @@
+docker run -it -v .:/app/neural_lns final_neural_lns_env:latest 
