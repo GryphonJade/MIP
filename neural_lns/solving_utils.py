@@ -19,7 +19,7 @@ import enum
 from typing import Any, Dict, Optional
 import ml_collections
 from mip_utils import MPModel, MPVariable, MPConstraint, MPSolverResponseStatus
-from pyscipopt import Model, quicksum
+from pyscipopt import Model, quicksum, SCIP_PARAMSETTING
 import numpy as np
 
 class SolverState(enum.Enum):
@@ -68,34 +68,80 @@ class SCIPSolver(Solver):
     def __init__(self):
         self.model = None
         self.state = SolverState.INIT
+        self._mip = None
+        self._scip_vars = []
+        self._static_features = None
 
-    def load_model(self, mip: MPModel) -> SolverState:
+    def load_model(self, mip: MPModel) -> MPSolverResponseStatus:
+        """加载MIP模型到SCIP求解器"""
+        self._mip = mip
         self.model = Model()
+        
         # 添加变量
-        scip_vars = {}
         for var in mip.variable:
             scip_var = self.model.addVar(
                 name=var.name,
+                vtype='BINARY' if is_var_binary(var) else 'INTEGER' if var.is_integer else 'CONTINUOUS',
                 lb=var.lower_bound,
                 ub=var.upper_bound,
-                vtype='BINARY' if is_var_binary(var) else 'INTEGER' if var.is_integer else 'CONTINUOUS'
+                obj=var.objective_coefficient
             )
-            scip_vars[var.name] = scip_var
+            self._scip_vars.append(scip_var)
+            
         # 添加约束
-        for constr in mip.constraint:
-            expr = quicksum(scip_vars[mip.variable[idx].name] * coeff for idx, coeff in zip(constr.var_index, constr.coefficient))
-            self.model.addCons(expr >= constr.lower_bound)
-            self.model.addCons(expr <= constr.upper_bound)
-        # 设置目标
-        obj = quicksum(var.objective_coefficient * scip_vars[var.name] for var in mip.variable)
-        self.model.setObjective(obj, sense='maximize' if mip.maximize else 'minimize')
+        for cons in mip.constraint:
+            expr = quicksum(
+                self._scip_vars[idx] * coeff 
+                for idx, coeff in zip(cons.var_index, cons.coefficient)
+            )
+            if cons.lower_bound == cons.upper_bound:
+                self.model.addCons(expr == cons.lower_bound, name=cons.name)
+            else:
+                if cons.lower_bound > -np.inf:
+                    self.model.addCons(expr >= cons.lower_bound, name=f"{cons.name}_lb")
+                if cons.upper_bound < np.inf:
+                    self.model.addCons(expr <= cons.upper_bound, name=f"{cons.name}_ub")
+                    
+        # 设置目标函数方向
+        if mip.maximize:
+            self.model.setMaximize()
+        else:
+            self.model.setMinimize()
+            
         self.state = SolverState.MODEL_LOADED
-        return self.state
-
-    def extract_lp_features_at_root(self, params) -> Dict[str, Any]:
-        # 提取根节点LP特征的实现（示例）
-        self.model.optimize()
-        return {
-            'variable_names': [var.name for var in self.model.getVars()],
-            'variable_features': np.array([])  # 实际特征数据
-        }
+        return MPSolverResponseStatus.NOT_SOLVED
+        
+    def extract_lp_features_at_root(self, params=None):
+        """在根节点提取LP特征。"""
+        if params is None:
+            params = {}
+        
+        # 设置SCIP参数
+        self.model.setParam('display/verblevel', 0)
+        self.model.setParam('limits/time', 60)  # 限制为1分钟
+        self.model.setParam('lp/iterlim', 1000)  # 限制LP迭代次数
+        self.model.setParam('presolving/maxrounds', 0)  # 禁用预求解
+        self.model.setParam('separating/maxroundsroot', 0)  # 禁用根节点切割
+        
+        # 优化模型
+        try:
+            self.model.optimize()
+            
+            # 检查求解状态
+            status = self.model.getStatus()
+            if status != 'optimal':
+                print(f"警告: LP求解未达到最优状态，当前状态: {status}")
+                return self._mip.extract_static_features()
+            
+            # 获取求解结果
+            solution = np.array([var.getLPSol() for var in self.model.getVars()])
+            if len(solution) == 0:
+                print("警告: 无法获取LP列数据")
+                return self._mip.extract_static_features()
+                
+            # 提取动态特征
+            return self._mip.extract_dynamic_features(solution)
+            
+        except Exception as e:
+            print(f"LP求解过程中发生错误: {str(e)}")
+            return self._mip.extract_static_features()

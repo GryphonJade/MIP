@@ -250,19 +250,23 @@ class MPModel:
             }
         }
     """
-    features = copy.deepcopy(static_features)
+    features = static_features.copy()
     n_vars = len(self.variable)
     
     # === 变量特征(V) ===
     # 解在边界的指示器
+    lb_array = np.array([var.lower_bound for var in self.variable])
+    ub_array = np.array([var.upper_bound for var in self.variable])
+    
     features['V']['sol_is_at_lb'] = np.isclose(
         solution,
-        [var.lower_bound for var in self.variable],
+        lb_array,
         rtol=1e-6, atol=1e-6
     ).reshape(-1, 1)
+    
     features['V']['sol_is_at_ub'] = np.isclose(
         solution,
-        [var.upper_bound for var in self.variable],
+        ub_array,
         rtol=1e-6, atol=1e-6
     ).reshape(-1, 1)
     

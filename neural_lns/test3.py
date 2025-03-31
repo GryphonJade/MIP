@@ -8,7 +8,7 @@ import numpy as np
 
 from mip_utils import MPModel, MPVariable, MPConstraint, MPSolverResponseStatus
 from mip import Model as mip_model, MAXIMIZE
-from solving_utils import SCIPSolver
+from solving_utils import SCIPSolver, SolverState
 from preprocessor import SCIPPreprocessor
 import ml_collections
 from typing import Dict, Any, Optional
@@ -84,45 +84,86 @@ def get_features(
     mip: MPModel,
     solver_params: ml_collections.ConfigDict = SCIP_FEATURE_EXTRACTION_PARAMS
     ) -> Optional[Dict[str, Any]]:
-    """提取并预处理B&B树根节点的特征"""
-    mip_solver = SCIPSolver()
-    status = mip_solver.load_model(mip)
-    if status != MPSolverResponseStatus.NOT_SOLVED:
-        print(f"模型加载失败: {status}")
-        return None
-        
-    features = mip_solver.extract_lp_features_at_root(solver_params)
-    
-    # 打印特征统计信息
-    print("\n=== 特征统计 ===")
-    print(f"变量数量: {len(mip.variable)}")
-    print(f"约束数量: {len(mip.constraint)}")
-    print(f"目标函数类型: {'最大化' if mip.maximize else '最小化'}")
-    
-    print("\n=== 变量特征(V) ===")
-    for feat_name, feat_val in features['V'].items():
-        if feat_val.ndim == 2 and feat_val.shape[1] > 1:
-            print(f"{feat_name}: shape={feat_val.shape}, 均值={feat_val.mean():.4f}")
-        else:
-            print(f"{feat_name}: shape={feat_val.shape}, 均值={feat_val.mean():.4f}, 最小值={feat_val.min():.4f}, 最大值={feat_val.max():.4f}")
-            
-    print("\n=== 约束特征(C) ===")
-    for feat_name, feat_val in features['C'].items():
-        print(f"{feat_name}: shape={feat_val.shape}, 均值={feat_val.mean():.4f}, 最小值={feat_val.min():.4f}, 最大值={feat_val.max():.4f}")
-        
-    print("\n=== 边特征(E) ===")
-    for feat_name, feat_val in features['E'].items():
-        if feat_name == 'indices':
-            print(f"{feat_name}: shape={feat_val.shape}")
-        else:
-            print(f"{feat_name}: shape={feat_val.shape}, 均值={feat_val.mean():.4f}, 最小值={feat_val.min():.4f}, 最大值={feat_val.max():.4f}")
-    
-    return features
+  """Extracts and preprocesses the features from the root of B&B tree."""
+  mip_solver = SCIPSolver()
+  status = mip_solver.load_model(mip)
+  features = mip_solver.extract_lp_features_at_root(solver_params)
+  features['model_maximize'] = mip.maximize
+  return features
 
 if __name__ == "__main__":
     mps_file_path = "./data/assign1-5-8.mps"  # Replace with your MPS file path
+    print(f"尝试读取MPS文件: {mps_file_path}")
+    
     model = mip_model()
     model.read(mps_file_path)
+    print("MPS文件读取成功")
+    
     mp_model = convert_mip_to_mpmodel(model)
+    print("模型转换完成")
+    
+    print("\n开始提取特征...")
     features = get_features(mp_model)
-    print(features) 
+    if features is not None:
+        print("\n特征提取成功！")
+        
+        # 打印features字典的键
+        print("\n可用特征键:")
+        for key in features.keys():
+            print(f"- {key}")
+            
+        # 变量特征 (V)
+        print("\n变量特征 (V):")
+        if 'V' in features:
+            v_features = features['V']
+            if isinstance(v_features, dict):
+                for sub_key, sub_value in v_features.items():
+                    if isinstance(sub_value, np.ndarray):
+                        print(f"- {sub_key}: 形状={sub_value.shape}")
+                        print(f"  范围: [{sub_value.min():.4f}, {sub_value.max():.4f}]")
+                    else:
+                        print(f"- {sub_key}: {sub_value}")
+            else:
+                print(f"V特征值: {v_features}")
+        else:
+            print("未找到V特征")
+            
+        # 约束特征 (C)
+        print("\n约束特征 (C):")
+        if 'C' in features:
+            c_features = features['C']
+            if isinstance(c_features, dict):
+                for sub_key, sub_value in c_features.items():
+                    if isinstance(sub_value, np.ndarray):
+                        print(f"- {sub_key}: 形状={sub_value.shape}")
+                        print(f"  范围: [{sub_value.min():.4f}, {sub_value.max():.4f}]")
+                    else:
+                        print(f"- {sub_key}: {sub_value}")
+            else:
+                print(f"C特征值: {c_features}")
+        else:
+            print("未找到C特征")
+                
+        # 边特征 (E)
+        print("\n边特征 (E):")
+        if 'E' in features:
+            e_features = features['E']
+            if isinstance(e_features, dict):
+                for sub_key, sub_value in e_features.items():
+                    if isinstance(sub_value, np.ndarray):
+                        print(f"- {sub_key}: 形状={sub_value.shape}")
+                        print(f"  范围: [{sub_value.min():.4f}, {sub_value.max():.4f}]")
+                        if sub_key == 'indices':
+                            print(f"  前3行: {sub_value[:3]}")
+                    else:
+                        print(f"- {sub_key}: {sub_value}")
+            else:
+                print(f"E特征值: {e_features}")
+        else:
+            print("未找到E特征")
+                
+        # 其他特征
+        print("\n其他特征:")
+        print(f"- 目标函数方向: {'最大化' if features['model_maximize'] else '最小化'}")
+    else:
+        print("\n特征提取失败") 
