@@ -87,4 +87,40 @@
 1. 运行 `test3.py` 检查特征提取
 2. 确认边特征格式与之前相同
 3. 验证稀疏矩阵转换的正确性
-4. 测试大规模MILP的内存使用情况 
+4. 测试大规模MILP的内存使用情况
+
+## 3. 特征存储格式统一 (2024-03-xx)
+
+### 问题描述
+- 代码中边特征的键名为 `coef` 和 `indices`
+- 论文中使用 `names` 和 `indices` 存储在 `edge_features` 字典中
+- 当前代码缺少 `names` 键，且存储结构略有不同
+
+### 修改方案
+1. 将边特征的键名从 `coef` 改为 `names`，保持与论文一致
+2. 保持特征的数据类型：`names` 为列表，`indices` 为 numpy 数组
+3. 维持现有的特征计算逻辑不变
+
+### 代码修改
+文件：`neural_lns/mip_utils.py`
+```diff
+  if data:
+    # 创建稀疏矩阵
+    edge_matrix = sparse.coo_matrix((data, (rows, cols)))
+    # 提取所需格式的特征
+-   features['E']['coef'] = edge_matrix.data.reshape(-1, 1)
++   features['E']['names'] = edge_matrix.data.reshape(-1, 1).tolist()
+    features['E']['indices'] = np.vstack([edge_matrix.row, edge_matrix.col]).T
+```
+
+### 修改影响
+- 统一了特征命名规范
+- 与论文保持一致，提高代码可读性
+- 不影响特征的实际内容和计算逻辑
+- 便于后续与论文代码对比和维护
+
+### 验证方法
+1. 运行 `test3.py` 检查特征提取
+2. 确认边特征现在使用 `names` 而不是 `coef`
+3. 验证特征值保持不变
+4. 确认数据类型符合要求 
