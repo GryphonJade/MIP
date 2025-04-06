@@ -53,6 +53,8 @@ class MPVariable:
   is_integer: bool = True
   # The name of the variable.
   name: str = ""
+  # The age of the variable (LP迭代次数)
+  age: int = 0
 
 
 @dataclasses.dataclass
@@ -84,11 +86,47 @@ class MPModel:
   objective_offset: float = 0.0
   # Name of the model.
   name: str = ""
+  # 历史incumbent值列表,每个元素是一个numpy数组,shape=(n_vars,)
+  historical_incumbents: List[np.ndarray] = dataclasses.field(default_factory=list)
 
-  def _normalize_vector(self, vec: np.ndarray) -> np.ndarray:
-    """归一化向量"""
+  def add_incumbent(self, incumbent_values: np.ndarray) -> None:
+    """添加新的incumbent值到历史记录中
+    
+    Args:
+        incumbent_values: shape=(n_vars,) 当前incumbent解
+    """
+    if len(incumbent_values) != len(self.variable):
+      raise ValueError(f"Incumbent values length {len(incumbent_values)} "
+                      f"does not match number of variables {len(self.variable)}")
+    self.historical_incumbents.append(incumbent_values.copy())
+
+  def _normalize_vector(self, vec):
+    """更稳定的向量归一化方法
+    
+    Args:
+        vec: 需要归一化的向量
+        
+    Returns:
+        归一化后的向量
+    """
+    # 处理零向量
+    if np.all(vec == 0):
+        return vec
+        
+    # 计算范数
     norm = np.linalg.norm(vec)
-    return vec / norm if norm > 0 else vec
+    
+    # 处理极小值
+    if norm < 1e-10:
+        return vec
+        
+    # 归一化并添加小量防止除零
+    normalized = vec / (norm + 1e-10)
+    
+    # 处理异常值
+    normalized = np.clip(normalized, -1e6, 1e6)
+    
+    return normalized
 
   def _get_constraint_matrix(self) -> Tuple[np.ndarray, np.ndarray]:
     """获取约束矩阵和范数
@@ -108,6 +146,65 @@ class MPModel:
     cons_norms[cons_norms == 0] = 1
     
     return cons_matrix, cons_norms
+
+  def check_feature_completeness(self, features: Dict[str, Dict[str, np.ndarray]]) -> bool:
+    """检查特征是否完整
+    
+    Args:
+        features: 特征字典
+        
+    Returns:
+        bool: 特征是否完整
+    """
+    # 检查必需的特征键
+    required_keys = ['V', 'C', 'E', 'model_maximize']
+    for key in required_keys:
+        if key not in features:
+            print(f"警告：缺少必需的特征键 '{key}'")
+            return False
+            
+    # 检查变量特征
+    if not isinstance(features['V'], dict):
+        print("警告：变量特征格式不正确")
+        return False
+        
+    # 检查约束特征
+    if not isinstance(features['C'], dict):
+        print("警告：约束特征格式不正确")
+        return False
+        
+    # 检查边特征
+    if not isinstance(features['E'], dict):
+        print("警告：边特征格式不正确")
+        return False
+        
+    # 检查边特征的必需字段
+    if 'names' not in features['E'] or 'indices' not in features['E']:
+        print("警告：边特征缺少必需字段")
+        return False
+        
+    # 检查特征维度
+    try:
+        n_vars = len(self.variable)
+        n_cons = len(self.constraint)
+        
+        # 检查变量特征维度
+        for key, value in features['V'].items():
+            if isinstance(value, np.ndarray) and value.shape[0] != n_vars:
+                print(f"警告：变量特征 '{key}' 维度不匹配")
+                return False
+                
+        # 检查约束特征维度
+        for key, value in features['C'].items():
+            if isinstance(value, np.ndarray) and value.shape[0] != n_cons:
+                print(f"警告：约束特征 '{key}' 维度不匹配")
+                return False
+                
+    except Exception as e:
+        print(f"警告：特征维度检查出错: {str(e)}")
+        return False
+        
+    return True
 
   def extract_static_features(self) -> Dict[str, Dict[str, np.ndarray]]:
     """提取静态特征(不需要求解信息的特征)
@@ -185,10 +282,12 @@ class MPModel:
     # 约束偏置(bias)归一化
     if len(has_lhs) > 0 or len(has_rhs) > 0:
       bias = np.concatenate([
-        -np.array([self.constraint[i].lower_bound for i in has_lhs]) / cons_norms[has_lhs],
-        +np.array([self.constraint[i].upper_bound for i in has_rhs]) / cons_norms[has_rhs]
-      ]).reshape(-1, 1)
-      features['C']['bias'] = bias
+        -np.array([self.constraint[i].lower_bound for i in has_lhs]),
+        +np.array([self.constraint[i].upper_bound for i in has_rhs])
+      ])
+      # 对偏置进行归一化
+      bias = self._normalize_vector(bias)
+      features['C']['bias'] = bias.reshape(-1, 1)
     
     # === 边特征(E) ===
     # 约束系数归一化
@@ -213,6 +312,13 @@ class MPModel:
       features['E']['names'] = edge_matrix.data.reshape(-1, 1).tolist()
       features['E']['indices'] = np.vstack([edge_matrix.row, edge_matrix.col]).T
     
+    # 检查特征完整性
+    if not self.check_feature_completeness(features):
+        print("警告：特征提取不完整")
+        
+    # 添加模型类型特征
+    features['model_maximize'] = self.maximize
+        
     return features
 
   def extract_dynamic_features(
@@ -291,8 +397,10 @@ class MPModel:
     obj_coeffs = np.array([var.objective_coefficient for var in self.variable])
     features['V']['reduced_cost'] = self._normalize_vector(reduced_costs).reshape(-1, 1)
     
-    # LP年龄归一化
-    features['V']['age'] = np.full((n_vars, 1), age / (age + 5))
+    # 获取每个变量的年龄
+    var_ages = np.array([var.age for var in self.variable])
+    # LP年龄归一化 - 对每个变量使用其实际年龄
+    features['V']['age'] = (var_ages / (var_ages + 5)).reshape(-1, 1)
     
     # 解值
     features['V']['sol_val'] = solution.reshape(-1, 1)
@@ -300,7 +408,17 @@ class MPModel:
     # incumbent相关特征(如果提供)
     if incumbent_values is not None:
       features['V']['inc_val'] = incumbent_values.reshape(-1, 1)
-      features['V']['avg_inc_val'] = incumbent_values.reshape(-1, 1)  # 简化处理,实际应该是多个incumbent的平均
+      # 计算历史incumbent的平均值
+      if len(self.historical_incumbents) > 0:
+        # 添加当前incumbent到历史记录
+        self.add_incumbent(incumbent_values)
+        # 计算所有历史incumbent的平均值
+        avg_incumbent = np.mean(self.historical_incumbents, axis=0)
+        features['V']['avg_inc_val'] = avg_incumbent.reshape(-1, 1)
+      else:
+        # 如果没有历史记录,使用当前incumbent值
+        features['V']['avg_inc_val'] = incumbent_values.reshape(-1, 1)
+        self.add_incumbent(incumbent_values)
     
     # === 约束特征(C) ===
     if 'obj_cos_sim' in features['C']:

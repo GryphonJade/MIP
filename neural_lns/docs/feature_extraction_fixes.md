@@ -108,7 +108,7 @@
     # 创建稀疏矩阵
     edge_matrix = sparse.coo_matrix((data, (rows, cols)))
     # 提取所需格式的特征
--   features['E']['coef'] = edge_matrix.data.reshape(-1, 1)
+-   features['E']['coef'] = edge_matrix.data.reshape(-1, 1).tolist()
 +   features['E']['names'] = edge_matrix.data.reshape(-1, 1).tolist()
     features['E']['indices'] = np.vstack([edge_matrix.row, edge_matrix.col]).T
 ```
