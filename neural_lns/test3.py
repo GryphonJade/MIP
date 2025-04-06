@@ -87,12 +87,17 @@ def get_features(
   """Extracts and preprocesses the features from the root of B&B tree."""
   mip_solver = SCIPSolver()
   status = mip_solver.load_model(mip)
-  features = mip_solver.extract_lp_features_at_root(solver_params)
-  features['model_maximize'] = mip.maximize
+  
+  # 只在模型未被求解时提取特征
+  features = None
+  if status == MPSolverResponseStatus.NOT_SOLVED:
+    features = mip_solver.extract_lp_features_at_root(solver_params)
+    features['model_maximize'] = mip.maximize
+    
   return features
 
 if __name__ == "__main__":
-    mps_file_path = "./data/assign1-5-8.mps"  # Replace with your MPS file path
+    mps_file_path = "./data/air05.mps"  # Replace with your MPS file path
     print(f"尝试读取MPS文件: {mps_file_path}")
     
     model = mip_model()
