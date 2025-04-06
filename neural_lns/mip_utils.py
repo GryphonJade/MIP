@@ -278,10 +278,8 @@ class MPModel:
     ).reshape(-1, 1)
     
     # 解的分数部分(对整数变量)
-    sol_frac = np.zeros(n_vars)
-    for i, var in enumerate(self.variable):
-      if var.is_integer:
-        sol_frac[i] = abs(solution[i] - round(solution[i]))
+    integer_mask = np.array([var.is_integer for var in self.variable])
+    sol_frac = np.abs(solution - np.round(solution)) * integer_mask
     features['V']['sol_frac'] = sol_frac.reshape(-1, 1)
     
     # 基状态的one-hot编码
