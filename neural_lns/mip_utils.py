@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from absl import logging
 import numpy as np
+from scipy import sparse
 
 # from neural_lns import sampling
 
@@ -191,20 +192,26 @@ class MPModel:
     
     # === 边特征(E) ===
     # 约束系数归一化
-    edge_indices = []  # [edge_idx, cons_idx, var_idx]
-    edge_coeffs = []   # 归一化的系数值
+    rows = []  # 约束索引
+    cols = []  # 变量索引
+    data = []  # 归一化的系数值
     for i, cons in enumerate(self.constraint):
       for var_idx, coeff in zip(cons.var_index, cons.coefficient):
         if i in has_lhs:
-          edge_indices.append([len(edge_coeffs), i, var_idx])
-          edge_coeffs.append(-coeff / cons_norms[i])
+          rows.append(i)
+          cols.append(var_idx)
+          data.append(-coeff / cons_norms[i])
         if i in has_rhs:
-          edge_indices.append([len(edge_coeffs), i, var_idx])
-          edge_coeffs.append(+coeff / cons_norms[i])
+          rows.append(i)
+          cols.append(var_idx)
+          data.append(+coeff / cons_norms[i])
     
-    if edge_coeffs:
-      features['E']['coef'] = np.array(edge_coeffs).reshape(-1, 1)
-      features['E']['indices'] = np.array(edge_indices)
+    if data:
+      # 创建稀疏矩阵
+      edge_matrix = sparse.coo_matrix((data, (rows, cols)))
+      # 提取所需格式的特征
+      features['E']['coef'] = edge_matrix.data.reshape(-1, 1)
+      features['E']['indices'] = np.vstack([edge_matrix.row, edge_matrix.col]).T
     
     return features
 
