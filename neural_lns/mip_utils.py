@@ -76,63 +76,26 @@ class MPConstraint:
 @dataclasses.dataclass
 class MPModel:
   """MPModel fully encodes a Mixed-Integer Linear Programming model."""
-  # All the variables appearing in the model.
-  variable: List[MPVariable] = dataclasses.field(default_factory=list)
-  # All the constraints appearing in the model.
-  constraint: List[MPConstraint] = dataclasses.field(default_factory=list)
-  # True if the problem is a maximization problem. Minimize by default.
-  maximize: bool = False
-  # Offset for the objective function. Must be finite.
-  objective_offset: float = 0.0
-  # Name of the model.
-  name: str = ""
-  # 历史incumbent值列表,每个元素是一个numpy数组,shape=(n_vars,)
-  historical_incumbents: List[np.ndarray] = dataclasses.field(default_factory=list)
-
-  def add_incumbent(self, incumbent_values: np.ndarray) -> None:
-    """添加新的incumbent值到历史记录中
+  
+  def __init__(self):
+    self.variable = []
+    self.constraint = []
+    self.objective_offset = 0.0
+    self.maximize = False
+    self.historical_incumbents = []  # 用于存储历史incumbent解
     
-    Args:
-        incumbent_values: shape=(n_vars,) 当前incumbent解
-    """
-    if len(incumbent_values) != len(self.variable):
-      raise ValueError(f"Incumbent values length {len(incumbent_values)} "
-                      f"does not match number of variables {len(self.variable)}")
-    self.historical_incumbents.append(incumbent_values.copy())
-
-  def _normalize_vector(self, vec):
-    """更稳定的向量归一化方法
+  def _normalize_vector(self, vector: np.ndarray) -> np.ndarray:
+    """归一化向量"""
+    norm = np.linalg.norm(vector)
+    if norm > 0:
+      return vector / norm
+    return vector
     
-    Args:
-        vec: 需要归一化的向量
-        
-    Returns:
-        归一化后的向量
-    """
-    # 处理零向量
-    if np.all(vec == 0):
-        return vec
-        
-    # 计算范数
-    norm = np.linalg.norm(vec)
-    
-    # 处理极小值
-    if norm < 1e-10:
-        return vec
-        
-    # 归一化并添加小量防止除零
-    normalized = vec / (norm + 1e-10)
-    
-    # 处理异常值
-    normalized = np.clip(normalized, -1e6, 1e6)
-    
-    return normalized
-
   def _get_constraint_matrix(self) -> Tuple[np.ndarray, np.ndarray]:
-    """获取约束矩阵和范数
+    """获取约束矩阵及其范数
     Returns:
-        cons_matrix: shape=(n_cons, n_vars)
-        cons_norms: shape=(n_cons,)
+        cons_matrix: 约束矩阵, shape=(n_cons, n_vars)
+        cons_norms: 每个约束的范数, shape=(n_cons,)
     """
     n_cons = len(self.constraint)
     n_vars = len(self.variable)
@@ -143,67 +106,58 @@ class MPModel:
         cons_matrix[i, var_idx] = coeff
         
     cons_norms = np.linalg.norm(cons_matrix, axis=1)
-    cons_norms[cons_norms == 0] = 1
+    cons_norms[cons_norms == 0] = 1.0  # 避免除零
     
     return cons_matrix, cons_norms
-
-  def check_feature_completeness(self, features: Dict[str, Dict[str, np.ndarray]]) -> bool:
-    """检查特征是否完整
     
+  def add_incumbent(self, incumbent: np.ndarray):
+    """添加新的incumbent解到历史记录中
+    Args:
+        incumbent: incumbent解的值, shape=(n_vars,)
+    """
+    self.historical_incumbents.append(incumbent.copy())
+    # 只保留最近的NUM_PAST_INCUMBENTS个incumbent
+    if len(self.historical_incumbents) > 3:  # NUM_PAST_INCUMBENTS = 3
+      self.historical_incumbents.pop(0)
+      
+  def check_feature_completeness(self, features: Dict[str, Dict[str, np.ndarray]], check_dynamic: bool = False) -> bool:
+    """检查特征是否完整
     Args:
         features: 特征字典
-        
+        check_dynamic: 是否检查动态特征
     Returns:
-        bool: 特征是否完整
+        是否完整
     """
-    # 检查必需的特征键
-    required_keys = ['V', 'C', 'E', 'model_maximize']
-    for key in required_keys:
-        if key not in features:
-            print(f"警告：缺少必需的特征键 '{key}'")
+    # 静态特征
+    static_features = {
+        'V': ['type', 'coef', 'has_lb', 'has_ub'],
+        'C': ['obj_cos_sim', 'bias'],
+        'E': ['coef', 'indices']
+    }
+    
+    # 动态特征
+    dynamic_features = {
+        'V': ['sol_is_at_lb', 'sol_is_at_ub', 'sol_frac', 'basis_status', 
+             'reduced_cost', 'age', 'sol_val'],
+        'C': ['is_tight', 'dualsol_val', 'age']
+    }
+    
+    # 选择要检查的特征
+    required_features = static_features.copy()
+    if check_dynamic:
+        for tensor in required_features:
+            if tensor in dynamic_features:
+                required_features[tensor].extend(dynamic_features[tensor])
+    
+    # 检查特征完整性
+    for tensor, required in required_features.items():
+        if tensor not in features:
+            print(f"缺少{tensor}特征")
             return False
-            
-    # 检查变量特征
-    if not isinstance(features['V'], dict):
-        print("警告：变量特征格式不正确")
-        return False
-        
-    # 检查约束特征
-    if not isinstance(features['C'], dict):
-        print("警告：约束特征格式不正确")
-        return False
-        
-    # 检查边特征
-    if not isinstance(features['E'], dict):
-        print("警告：边特征格式不正确")
-        return False
-        
-    # 检查边特征的必需字段
-    if 'names' not in features['E'] or 'indices' not in features['E']:
-        print("警告：边特征缺少必需字段")
-        return False
-        
-    # 检查特征维度
-    try:
-        n_vars = len(self.variable)
-        n_cons = len(self.constraint)
-        
-        # 检查变量特征维度
-        for key, value in features['V'].items():
-            if isinstance(value, np.ndarray) and value.shape[0] != n_vars:
-                print(f"警告：变量特征 '{key}' 维度不匹配")
+        for feat in required:
+            if feat not in features[tensor]:
+                print(f"缺少{tensor}.{feat}特征")
                 return False
-                
-        # 检查约束特征维度
-        for key, value in features['C'].items():
-            if isinstance(value, np.ndarray) and value.shape[0] != n_cons:
-                print(f"警告：约束特征 '{key}' 维度不匹配")
-                return False
-                
-    except Exception as e:
-        print(f"警告：特征维度检查出错: {str(e)}")
-        return False
-        
     return True
 
   def extract_static_features(self) -> Dict[str, Dict[str, np.ndarray]]:
@@ -222,7 +176,7 @@ class MPModel:
             },
             'E': {  # 边特征
                 'coef': shape=(n_edges, 1),        # 归一化的约束系数
-                'indices': shape=(n_edges, 3),     # [edge_idx, cons_idx, var_idx]
+                'indices': shape=(n_edges, 2),     # [cons_idx, var_idx]
             }
         }
     """
@@ -231,7 +185,7 @@ class MPModel:
     
     # === 变量特征(V) ===
     # 变量类型的one-hot编码
-    var_types = np.zeros((n_vars, 4))  # [binary, integer, impl_integer, continuous]
+    var_types = np.zeros((n_vars, 4))
     for i, var in enumerate(self.variable):
       if var.is_integer:
         if var.lower_bound == 0 and var.upper_bound == 1:
@@ -244,81 +198,95 @@ class MPModel:
     
     # 目标系数(归一化)
     obj_coeffs = np.array([var.objective_coefficient for var in self.variable])
-    features['V']['coef'] = self._normalize_vector(obj_coeffs).reshape(-1, 1)
+    obj_norm = np.linalg.norm(obj_coeffs)
+    if obj_norm > 0:
+      features['V']['coef'] = (obj_coeffs / obj_norm).reshape(-1, 1)
+    else:
+      features['V']['coef'] = obj_coeffs.reshape(-1, 1)
     
     # 边界指示器
     features['V']['has_lb'] = np.array([var.lower_bound > -np.inf for var in self.variable]).reshape(-1, 1)
     features['V']['has_ub'] = np.array([var.upper_bound < np.inf for var in self.variable]).reshape(-1, 1)
     
     # === 约束特征(C) ===
-    # 获取约束矩阵
-    cons_matrix, cons_norms = self._get_constraint_matrix()
+    # 分别处理上下界约束
+    cons_rows = []  # 约束矩阵行
+    cons_rhs = []  # 约束右端项
+    cons_idx = 0  # 约束索引
     
-    # 分离左右约束
-    has_lhs = []  # 有下界的约束
-    has_rhs = []  # 有上界的约束
-    for i, cons in enumerate(self.constraint):
+    for cons in self.constraint:
+      row = np.zeros(n_vars)
+      for var_idx, coef in zip(cons.var_index, cons.coefficient):
+        row[var_idx] = coef
+        
+      # 处理下界约束
       if cons.lower_bound > -np.inf:
-        has_lhs.append(i)
+        cons_rows.append(-row)  # 转换为标准形式 Ax >= b
+        cons_rhs.append(-cons.lower_bound)
+        cons_idx += 1
+        
+      # 处理上界约束
       if cons.upper_bound < np.inf:
-        has_rhs.append(i)
-    has_lhs = np.array(has_lhs)
-    has_rhs = np.array(has_rhs)
+        cons_rows.append(row)  # 标准形式 Ax <= b
+        cons_rhs.append(cons.upper_bound)
+        cons_idx += 1
     
-    # 计算与目标函数的余弦相似度
-    obj_vec = obj_coeffs.reshape(-1)
-    cos_sims = np.zeros(len(self.constraint))
-    for i, cons_vec in enumerate(cons_matrix):
-      cos_sims[i] = np.dot(cons_vec, obj_vec) / (cons_norms[i] * np.linalg.norm(obj_vec) + 1e-10)
-    
-    # 合并左右约束的余弦相似度(添加正负号)
-    if len(has_lhs) > 0 or len(has_rhs) > 0:
-      cos_sims_combined = np.concatenate([
-        -cos_sims[has_lhs],
-        +cos_sims[has_rhs]
-      ]).reshape(-1, 1)
-      features['C']['obj_cos_sim'] = cos_sims_combined
-    
-    # 约束偏置(bias)归一化
-    if len(has_lhs) > 0 or len(has_rhs) > 0:
-      bias = np.concatenate([
-        -np.array([self.constraint[i].lower_bound for i in has_lhs]),
-        +np.array([self.constraint[i].upper_bound for i in has_rhs])
-      ])
-      # 对偏置进行归一化
-      bias = self._normalize_vector(bias)
-      features['C']['bias'] = bias.reshape(-1, 1)
+    if cons_rows:
+      cons_matrix = np.array(cons_rows)
+      cons_rhs = np.array(cons_rhs)
+      
+      # 计算约束范数
+      cons_norms = np.linalg.norm(cons_matrix, axis=1)
+      cons_norms[cons_norms == 0] = 1
+      
+      # 计算与目标函数的余弦相似度
+      obj_vec = obj_coeffs.reshape(-1)
+      cos_sims = np.zeros(len(cons_matrix))
+      for i, cons_vec in enumerate(cons_matrix):
+        cos_sims[i] = np.dot(cons_vec, obj_vec) / (cons_norms[i] * (np.linalg.norm(obj_vec) + 1e-10))
+      
+      # 合并约束特征
+      features['C']['obj_cos_sim'] = cos_sims.reshape(-1, 1)
+      features['C']['bias'] = (cons_rhs / cons_norms).reshape(-1, 1)
+    else:
+      features['C']['obj_cos_sim'] = np.zeros((0, 1))
+      features['C']['bias'] = np.zeros((0, 1))
     
     # === 边特征(E) ===
-    # 约束系数归一化
-    rows = []  # 约束索引
-    cols = []  # 变量索引
-    data = []  # 归一化的系数值
-    for i, cons in enumerate(self.constraint):
-      for var_idx, coeff in zip(cons.var_index, cons.coefficient):
-        if i in has_lhs:
-          rows.append(i)
-          cols.append(var_idx)
-          data.append(-coeff / cons_norms[i])
-        if i in has_rhs:
-          rows.append(i)
-          cols.append(var_idx)
-          data.append(+coeff / cons_norms[i])
+    edge_indices = []
+    edge_coefs = []
+    cons_idx = 0
     
-    if data:
-      # 创建稀疏矩阵
-      edge_matrix = sparse.coo_matrix((data, (rows, cols)))
-      # 提取所需格式的特征
-      features['E']['names'] = edge_matrix.data.reshape(-1, 1).tolist()
-      features['E']['indices'] = np.vstack([edge_matrix.row, edge_matrix.col]).T
+    for cons in self.constraint:
+      # 获取约束范数
+      row = np.zeros(n_vars)
+      for var_idx, coef in zip(cons.var_index, cons.coefficient):
+        row[var_idx] = coef
+      cons_norm = np.linalg.norm(row)
+      if cons_norm == 0:
+        cons_norm = 1
+      
+      # 处理下界约束
+      if cons.lower_bound > -np.inf:
+        for var_idx, coef in zip(cons.var_index, cons.coefficient):
+          edge_indices.append([cons_idx, var_idx])
+          edge_coefs.append(-coef / cons_norm)  # 转换为标准形式
+        cons_idx += 1
+      
+      # 处理上界约束
+      if cons.upper_bound < np.inf:
+        for var_idx, coef in zip(cons.var_index, cons.coefficient):
+          edge_indices.append([cons_idx, var_idx])
+          edge_coefs.append(coef / cons_norm)
+        cons_idx += 1
     
-    # 检查特征完整性
-    if not self.check_feature_completeness(features):
-        print("警告：特征提取不完整")
-        
-    # 添加模型类型特征
-    features['model_maximize'] = self.maximize
-        
+    if edge_indices:
+      features['E']['indices'] = np.array(edge_indices)
+      features['E']['coef'] = np.array(edge_coefs).reshape(-1, 1)
+    else:
+      features['E']['indices'] = np.zeros((0, 2), dtype=np.int32)
+      features['E']['coef'] = np.zeros((0, 1))
+    
     return features
 
   def extract_dynamic_features(
@@ -353,8 +321,6 @@ class MPModel:
                 'reduced_cost': shape=(n_vars, 1),    # 归一化的简化成本
                 'age': shape=(n_vars, 1),             # 归一化的LP年龄
                 'sol_val': shape=(n_vars, 1),         # 解值
-                'inc_val': shape=(n_vars, 1),         # incumbent值(可选)
-                'avg_inc_val': shape=(n_vars, 1),     # 平均incumbent值(可选)
             },
             'C': {
                 'is_tight': shape=(n_cons_total, 1),  # 约束是否紧的
@@ -395,46 +361,42 @@ class MPModel:
     
     # 简化成本归一化
     obj_coeffs = np.array([var.objective_coefficient for var in self.variable])
-    features['V']['reduced_cost'] = self._normalize_vector(reduced_costs).reshape(-1, 1)
+    obj_norm = np.linalg.norm(obj_coeffs)
+    if obj_norm > 0:
+      features['V']['reduced_cost'] = (reduced_costs / obj_norm).reshape(-1, 1)
+    else:
+      features['V']['reduced_cost'] = reduced_costs.reshape(-1, 1)
     
-    # 获取每个变量的年龄
-    var_ages = np.array([var.age for var in self.variable])
-    # LP年龄归一化 - 对每个变量使用其实际年龄
-    features['V']['age'] = (var_ages / (var_ages + 5)).reshape(-1, 1)
+    # LP年龄归一化
+    features['V']['age'] = np.full((n_vars, 1), age / (age + 5))
     
     # 解值
     features['V']['sol_val'] = solution.reshape(-1, 1)
     
-    # incumbent相关特征(如果提供)
-    if incumbent_values is not None:
-      features['V']['inc_val'] = incumbent_values.reshape(-1, 1)
-      # 计算历史incumbent的平均值
-      if len(self.historical_incumbents) > 0:
-        # 添加当前incumbent到历史记录
-        self.add_incumbent(incumbent_values)
-        # 计算所有历史incumbent的平均值
-        avg_incumbent = np.mean(self.historical_incumbents, axis=0)
-        features['V']['avg_inc_val'] = avg_incumbent.reshape(-1, 1)
-      else:
-        # 如果没有历史记录,使用当前incumbent值
-        features['V']['avg_inc_val'] = incumbent_values.reshape(-1, 1)
-        self.add_incumbent(incumbent_values)
-    
     # === 约束特征(C) ===
     if 'obj_cos_sim' in features['C']:
-      n_cons_total = len(features['C']['obj_cos_sim'])
-      
-      # 紧致性指标
-      features['C']['is_tight'] = is_tight.reshape(-1, 1)
-      
-      # 对偶值归一化
-      if len(dual_values) > 0:
-        cons_matrix, cons_norms = self._get_constraint_matrix()
-        dual_values = dual_values / (cons_norms * (np.linalg.norm(obj_coeffs) + 1e-10))
-        features['C']['dualsol_val'] = dual_values.reshape(-1, 1)
-      
-      # LP年龄归一化
-      features['C']['age'] = np.full((n_cons_total, 1), age / (age + 5))
+        n_cons_total = len(features['C']['obj_cos_sim'])
+        
+        # 紧致性指标
+        features['C']['is_tight'] = is_tight.reshape(-1, 1)
+        
+        # 对偶值归一化
+        if len(dual_values) > 0:
+            cons_matrix = []
+            for cons in self.constraint:
+                row = np.zeros(n_vars)
+                for var_idx, coef in zip(cons.var_index, cons.coefficient):
+                    row[var_idx] = coef
+                cons_matrix.append(row)
+            cons_matrix = np.array(cons_matrix)
+            cons_norms = np.linalg.norm(cons_matrix, axis=1)
+            cons_norms[cons_norms == 0] = 1
+            
+            dual_values = dual_values / (cons_norms * (np.linalg.norm(obj_coeffs) + 1e-10))
+            features['C']['dualsol_val'] = dual_values.reshape(-1, 1)
+        
+        # LP年龄归一化
+        features['C']['age'] = np.full((n_cons_total, 1), age / (age + 5))
     
     return features
 
