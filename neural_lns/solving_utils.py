@@ -18,7 +18,7 @@ import abc
 import enum
 from typing import Any, Dict, Optional
 import ml_collections
-from mip_utils import MPModel, MPVariable, MPConstraint, MPSolverResponseStatus
+from mip_utils import MPModel, MPVariable, MPConstraint, MPSolverResponseStatus, MPSolutionResponse
 from pyscipopt import Model, quicksum, SCIP_PARAMSETTING
 import numpy as np
 

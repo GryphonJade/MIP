@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 from pyscipopt import Model
 from neural_lns import data_utils
-from neural_lns.mip_utils import MPModel, MPVariable, MPConstraint, MPSolverResponseStatus
+from neural_lns.mip_utils import MPModel, MPVariable, MPConstraint, MPSolverResponseStatus, MPSolutionResponse
 from neural_lns.solving_utils import SCIPSolver, SolverState
 from neural_lns.preprocessor import SCIPPreprocessor
 import ml_collections
@@ -24,6 +24,22 @@ def _int64_feature(value):
     """将整数值序列化为 TFRecord 特征"""
     return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
 
+def _bool_feature(value):
+    """将布尔值序列化为 TFRecord 特征"""
+    return tf.train.Feature(bool_list=tf.train.BoolList(value=[value]))
+
+def _bytes_list_feature(value):
+    """将字节列表序列化为 TFRecord 特征"""
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=value))
+
+def _float_list_feature(value):
+    """将浮点列表序列化为 TFRecord 特征"""
+    return tf.train.Feature(float_list=tf.train.FloatList(value=value))
+
+def _int64_list_feature(value):
+    """将整数列表序列化为 TFRecord 特征"""
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
+
 def parse_mps_file(mps_file):
     """解析MPS文件并返回MPModel对象
     
@@ -32,59 +48,72 @@ def parse_mps_file(mps_file):
     """
     model = Model()
     
-    try:
-        # 临时禁用预处理和启发式搜索，以确保获取原始问题结构
-        model.setPresolve(False)  # 禁用预处理
-        model.setHeuristics(False)  # 禁用启发式搜索
-        
-        # 读取MPS文件
-        model.readProblem(mps_file)
-        print(f"Original problem has {model.getNVars()} variables (all binary) and {model.getNConss()} constraints")
-        
-        # 获取所有变量和约束
-        vars = model.getVars()
-        cons = model.getConss()
-        
-        # 创建MPModel对象
-        mp_model = MPModel()
-        
-        # 设置变量
-        for var in vars:
-            mp_variable = MPVariable()
-            mp_variable.name = var.name
-            mp_variable.lb = var.getLbLocal()
-            mp_variable.ub = var.getUbLocal()
-            mp_variable.type = var.vtype()
-            mp_model.variable.append(mp_variable)
-        
-        # 设置约束
-        for con in cons:
+    # 禁用预处理和启发式搜索
+    model.setPresolve(False)
+    model.setHeuristics(False)
+    model.disablePropagation()
+    
+    # 禁用约束升级
+    model.setParam('constraints/linear/upgrade/logicor', False)
+    model.setParam('constraints/linear/upgrade/indicator', False)
+    model.setParam('constraints/linear/upgrade/knapsack', False)
+    model.setParam('constraints/linear/upgrade/setppc', False)
+    model.setParam('constraints/linear/upgrade/xor', False)
+    model.setParam('constraints/linear/upgrade/varbound', False)
+    
+    model.readProblem(mps_file)
+    print(f"Original problem has {model.getNVars()} variables (all binary) and {model.getNConss()} constraints")
+    
+    mp_model = MPModel()
+    
+    # Add variables
+    var_name_to_idx = {}  # 添加变量名到索引的映射
+    for i, var in enumerate(model.getVars()):
+        mp_var = MPVariable()
+        mp_var.name = var.name
+        mp_var.lower_bound = var.getLbLocal()
+        mp_var.upper_bound = var.getUbLocal()
+        mp_var.is_integer = var.vtype() in ('BINARY', 'INTEGER')
+        mp_model.variable.append(mp_var)
+        var_name_to_idx[var.name] = i  # 记录变量名到索引的映射
+    
+    # Add constraints
+    for con in model.getConss():
+        if con.isLinear():
             mip_constraint = MPConstraint()
+            mip_constraint.name = con.name
+            
             try:
-                row = model.getRowLinear(con)
-                if row is not None:
-                    cols = row.getCols()
-                    vals = row.getVals()
-                    for i in range(len(cols)):
-                        var_idx = cols[i].getIndex()
-                        coef = vals[i]
-                        if abs(coef) > 1e-10:  # 只添加非零系数
-                            mip_constraint.var_idx.append(var_idx)
-                            mip_constraint.coef.append(coef)
-                    mip_constraint.lb = row.getLhs()
-                    mip_constraint.ub = row.getRhs()
-                    mp_model.constraint.append(mip_constraint)
-                else:
-                    print(f"Warning: Could not get row for constraint {con.name}")
+                # Get coefficients for each variable
+                coeff_dict = model.getValsLinear(con)
+                if coeff_dict is None:
+                    print(f"Warning: Could not get coefficients for constraint {con.name}")
+                    continue
+                
+                # Add variables and coefficients
+                for var_name, coef in coeff_dict.items():
+                    if abs(coef) > 1e-10:  # Only add non-zero coefficients
+                        if var_name in var_name_to_idx:
+                            mip_constraint.var_index.append(var_name_to_idx[var_name])
+                            mip_constraint.coefficient.append(coef)
+                        else:
+                            print(f"Warning: Variable {var_name} not found in mapping")
+                
+                # Get bounds
+                lhs = model.getLhs(con)
+                rhs = model.getRhs(con)
+                if lhs is not None and lhs > -model.infinity():
+                    mip_constraint.lower_bound = lhs
+                if rhs is not None and rhs < model.infinity():
+                    mip_constraint.upper_bound = rhs
+                
+                mp_model.constraint.append(mip_constraint)
             except Exception as e:
                 print(f"Warning: Could not process constraint {con.name}: {str(e)}")
-        
-        return mp_model
-        
-    finally:
-        # 恢复原始设置
-        model.setPresolve(True)
-        model.setHeuristics(True)
+        else:
+            print(f"Warning: Constraint {con.name} is not linear")
+    
+    return mp_model
 
 def extract_features(mip):
     """从MIP模型中提取特征"""
@@ -93,10 +122,7 @@ def extract_features(mip):
         solver = SCIPSolver()
         
         # 加载模型
-        status = solver.load_model(mip)
-        if status != MPSolverResponseStatus.NOT_SOLVED:
-            print("模型已被求解，无法提取特征")
-            return None
+        solver.load_model(mip)
             
         # 提取特征
         features = solver.extract_lp_features_at_root(
@@ -132,10 +158,10 @@ def extract_features(mip):
         # 添加最优解标签
         solver.solve(data_utils.SCIP_FEATURE_EXTRACTION_PARAMS)
         solution = solver.get_best_solution()
-        if solution and solution.status in [
+        if solution and solution.status in {
             MPSolverResponseStatus.OPTIMAL,
             MPSolverResponseStatus.FEASIBLE
-        ]:
+        }:
             features['best_solution_labels'] = np.array(
                 solution.variable_value, dtype=np.float32
             )
@@ -151,54 +177,76 @@ def extract_features(mip):
         print(f"特征提取过程中出错: {e}")
         return None
 
-def serialize_features(features):
-    """将特征序列化为TFRecord格式"""
-    try:
-        # 序列化张量特征
-        variable_features_serialized = tf.io.serialize_tensor(
-            tf.convert_to_tensor(features['variable_features'])
-        ).numpy()
-        constraint_features_serialized = tf.io.serialize_tensor(
-            tf.convert_to_tensor(features['constraint_features'])
-        ).numpy()
-        edge_indices_serialized = tf.io.serialize_tensor(
-            tf.convert_to_tensor(features['edge_indices'])
-        ).numpy()
-        edge_features_serialized = tf.io.serialize_tensor(
-            tf.convert_to_tensor(features['edge_features'])
-        ).numpy()
-        
-        # 创建特征字典
-        feature_dict = {
-            'variable_features': _bytes_feature(variable_features_serialized),
-            'constraint_features': _bytes_feature(constraint_features_serialized),
-            'edge_indices': _bytes_feature(edge_indices_serialized),
-            'edge_features': _bytes_feature(edge_features_serialized),
-            'variable_lbs': _float_feature(features['variable_lbs']),
-            'variable_ubs': _float_feature(features['variable_ubs']),
-            'binary_variable_indices': _int64_feature(features['binary_variable_indices']),
-            'all_integer_variable_indices': _int64_feature(features['all_integer_variable_indices']),
-            'model_maximize': _int64_feature([int(features['model_maximize'])]),
-            'best_solution_labels': _float_feature(features['best_solution_labels']),
-            'constraint_feature_names': _bytes_feature(tf.io.serialize_tensor(
-                tf.constant([""], dtype=tf.string)
-            ).numpy()),
-            'variable_feature_names': _bytes_feature(tf.io.serialize_tensor(
-                tf.constant([""], dtype=tf.string)
-            ).numpy()),
-            'edge_features_names': _bytes_feature(tf.io.serialize_tensor(
-                tf.constant([""], dtype=tf.string)
-            ).numpy()),
-            'variable_names': _bytes_feature(tf.io.serialize_tensor(
-                tf.constant([""], dtype=tf.string)
-            ).numpy()),
-        }
-        
-        return tf.train.Example(features=tf.train.Features(feature=feature_dict))
-        
-    except Exception as e:
-        print(f"特征序列化过程中出错: {e}")
-        return None
+def serialize_features(variable_features, constraint_features, edge_features, edge_indices):
+    """序列化特征到TFRecord格式。"""
+    print("\n=== 特征形状 ===")
+    print("变量特征:")
+    for name, feat in variable_features.items():
+        print(f"{name}: {feat.shape}")
+    
+    print("\n约束特征:")
+    for name, feat in constraint_features.items():
+        print(f"{name}: {feat.shape}")
+    
+    print("\n边特征:")
+    print(f"indices: {edge_indices.shape}")
+    print(f"coef: {edge_features.shape}")
+
+    # 连接变量特征
+    var_feats = []
+    for feat in variable_features.values():
+        if len(feat.shape) == 1:
+            feat = feat.reshape(-1, 1)
+        var_feats.append(feat.astype(np.float32))
+    variable_features_concat = np.concatenate(var_feats, axis=1)
+
+    # 连接约束特征
+    # 将is_tight和dualsol_val扩展到852维
+    is_tight = constraint_features['is_tight']
+    dualsol_val = constraint_features['dualsol_val']
+    is_tight_expanded = np.repeat(is_tight, 2, axis=0)
+    dualsol_val_expanded = np.repeat(dualsol_val, 2, axis=0)
+
+    con_feats = [
+        constraint_features['obj_cos_sim'].astype(np.float32),
+        constraint_features['bias'].astype(np.float32),
+        is_tight_expanded.astype(np.float32),
+        dualsol_val_expanded.astype(np.float32),
+        constraint_features['age'].astype(np.float32)
+    ]
+    constraint_features_concat = np.concatenate(con_feats, axis=1)
+
+    # 确保边特征的形状正确
+    edge_features = edge_features.reshape(-1, 1).astype(np.float32)
+    edge_indices = edge_indices.astype(np.int64)
+
+    print("\n=== 连接后的形状 ===")
+    print(f"variable_features: {variable_features_concat.shape}")
+    print(f"constraint_features: {constraint_features_concat.shape}")
+    print(f"edge_features: {edge_features.shape}")
+    print(f"edge_indices: {edge_indices.shape}")
+
+    # 创建特征字典
+    feature = {
+        'variable_features': _bytes_feature([tf.io.serialize_tensor(variable_features_concat).numpy()]),
+        'constraint_features': _bytes_feature([tf.io.serialize_tensor(constraint_features_concat).numpy()]),
+        'edge_features': _bytes_feature([tf.io.serialize_tensor(edge_features).numpy()]),
+        'edge_indices': _bytes_feature([tf.io.serialize_tensor(edge_indices).numpy()]),
+        'binary_variable_indices': _int64_list_feature(list(range(len(variable_features_concat)))),
+        'model_maximize': _bool_feature(False),
+        'variable_names': _bytes_list_feature([f"x{i}".encode() for i in range(len(variable_features_concat))]),
+        'best_solution_labels': _float_list_feature([0.0] * len(variable_features_concat)),
+        'variable_lbs': _float_list_feature([0.0] * len(variable_features_concat)),
+        'variable_ubs': _float_list_feature([1.0] * len(variable_features_concat)),
+        'all_integer_variable_indices': _int64_list_feature(list(range(len(variable_features_concat)))),
+        'edge_features_names': _bytes_feature([b"coef"]),
+        'variable_feature_names': _bytes_feature([b"features"]),
+        'constraint_feature_names': _bytes_feature([b"features"])
+    }
+
+    # 创建Example
+    example = tf.train.Example(features=tf.train.Features(feature=feature))
+    return example.SerializeToString()
 
 def mps_to_tfrecord(mps_file_path, tfrecord_file_path):
     """将MPS文件转换为TFRecord文件"""
@@ -214,14 +262,14 @@ def mps_to_tfrecord(mps_file_path, tfrecord_file_path):
             return False
             
         # 3. 序列化特征
-        example = serialize_features(features)
+        example = serialize_features(features['V'], features['C'], features['E']['coef'], features['E']['indices'])
         if example is None:
             return False
             
         # 4. 写入TFRecord文件
         os.makedirs(os.path.dirname(tfrecord_file_path), exist_ok=True)
         with tf.io.TFRecordWriter(tfrecord_file_path) as writer:
-            writer.write(example.SerializeToString())
+            writer.write(example)
         
         print(f"TFRecord文件已保存至: {tfrecord_file_path}")
         return True
