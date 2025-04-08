@@ -26,7 +26,7 @@ def _int64_feature(value):
 
 def _bool_feature(value):
     """将布尔值序列化为 TFRecord 特征"""
-    return tf.train.Feature(bool_list=tf.train.BoolList(value=[value]))
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=[int(value)]))
 
 def _bytes_list_feature(value):
     """将字节列表序列化为 TFRecord 特征"""
@@ -177,75 +177,73 @@ def extract_features(mip):
         print(f"特征提取过程中出错: {e}")
         return None
 
-def serialize_features(variable_features, constraint_features, edge_features, edge_indices):
-    """序列化特征到TFRecord格式。"""
+def serialize_features(features):
+    """将特征序列化为TFRecord格式"""
+    # 打印特征形状
     print("\n=== 特征形状 ===")
     print("变量特征:")
-    for name, feat in variable_features.items():
-        print(f"{name}: {feat.shape}")
-    
+    for k, v in features['V'].items():
+        print(f"{k}: {v.shape}")
     print("\n约束特征:")
-    for name, feat in constraint_features.items():
-        print(f"{name}: {feat.shape}")
-    
+    for k, v in features['C'].items():
+        print(f"{k}: {v.shape}")
     print("\n边特征:")
-    print(f"indices: {edge_indices.shape}")
-    print(f"coef: {edge_features.shape}")
+    for k, v in features['E'].items():
+        print(f"{k}: {v.shape}")
 
-    # 连接变量特征
-    var_feats = []
-    for feat in variable_features.values():
-        if len(feat.shape) == 1:
-            feat = feat.reshape(-1, 1)
-        var_feats.append(feat.astype(np.float32))
-    variable_features_concat = np.concatenate(var_feats, axis=1)
+    # 变量特征
+    variable_features = np.concatenate([
+        features['V']['type'],
+        features['V']['coef'],
+        features['V']['has_lb'],
+        features['V']['has_ub'],
+        features['V']['sol_is_at_lb'],
+        features['V']['sol_is_at_ub'],
+        features['V']['sol_frac'],
+        features['V']['basis_status'],
+        features['V']['reduced_cost'],
+        features['V']['age'],
+        features['V']['sol_val']
+    ], axis=1).astype(np.float32)
 
-    # 连接约束特征
-    # 将is_tight和dualsol_val扩展到852维
-    is_tight = constraint_features['is_tight']
-    dualsol_val = constraint_features['dualsol_val']
-    is_tight_expanded = np.repeat(is_tight, 2, axis=0)
-    dualsol_val_expanded = np.repeat(dualsol_val, 2, axis=0)
+    # 约束特征
+    constraint_features = np.concatenate([
+        features['C']['obj_cos_sim'],
+        features['C']['bias'],
+        np.repeat(features['C']['is_tight'], 2, axis=0),  # 扩展到(852, 1)
+        np.repeat(features['C']['dualsol_val'], 2, axis=0),  # 扩展到(852, 1)
+        features['C']['age']
+    ], axis=1).astype(np.float32)
 
-    con_feats = [
-        constraint_features['obj_cos_sim'].astype(np.float32),
-        constraint_features['bias'].astype(np.float32),
-        is_tight_expanded.astype(np.float32),
-        dualsol_val_expanded.astype(np.float32),
-        constraint_features['age'].astype(np.float32)
-    ]
-    constraint_features_concat = np.concatenate(con_feats, axis=1)
+    # 边特征
+    edge_features = np.concatenate([
+        features['E']['coef'],
+        np.zeros_like(features['E']['coef'])  # 添加一个额外的维度
+    ], axis=1).astype(np.float32)
 
-    # 确保边特征的形状正确
-    edge_features = edge_features.reshape(-1, 1).astype(np.float32)
-    edge_indices = edge_indices.astype(np.int64)
-
+    # 打印连接后的形状
     print("\n=== 连接后的形状 ===")
-    print(f"variable_features: {variable_features_concat.shape}")
-    print(f"constraint_features: {constraint_features_concat.shape}")
+    print(f"variable_features: {variable_features.shape}")
+    print(f"constraint_features: {constraint_features.shape}")
     print(f"edge_features: {edge_features.shape}")
-    print(f"edge_indices: {edge_indices.shape}")
+    print(f"edge_indices: {features['E']['indices'].shape}")
+
+    # 序列化特征
+    serialized_variable_features = tf.io.serialize_tensor(tf.convert_to_tensor(variable_features))
+    serialized_constraint_features = tf.io.serialize_tensor(tf.convert_to_tensor(constraint_features))
+    serialized_edge_features = tf.io.serialize_tensor(tf.convert_to_tensor(edge_features))
+    serialized_edge_indices = tf.io.serialize_tensor(tf.convert_to_tensor(features['E']['indices']))
 
     # 创建特征字典
-    feature = {
-        'variable_features': _bytes_feature([tf.io.serialize_tensor(variable_features_concat).numpy()]),
-        'constraint_features': _bytes_feature([tf.io.serialize_tensor(constraint_features_concat).numpy()]),
-        'edge_features': _bytes_feature([tf.io.serialize_tensor(edge_features).numpy()]),
-        'edge_indices': _bytes_feature([tf.io.serialize_tensor(edge_indices).numpy()]),
-        'binary_variable_indices': _int64_list_feature(list(range(len(variable_features_concat)))),
-        'model_maximize': _bool_feature(False),
-        'variable_names': _bytes_list_feature([f"x{i}".encode() for i in range(len(variable_features_concat))]),
-        'best_solution_labels': _float_list_feature([0.0] * len(variable_features_concat)),
-        'variable_lbs': _float_list_feature([0.0] * len(variable_features_concat)),
-        'variable_ubs': _float_list_feature([1.0] * len(variable_features_concat)),
-        'all_integer_variable_indices': _int64_list_feature(list(range(len(variable_features_concat)))),
-        'edge_features_names': _bytes_feature([b"coef"]),
-        'variable_feature_names': _bytes_feature([b"features"]),
-        'constraint_feature_names': _bytes_feature([b"features"])
+    feature_dict = {
+        'variable_features': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_variable_features.numpy()])),
+        'constraint_features': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_constraint_features.numpy()])),
+        'edge_features': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_edge_features.numpy()])),
+        'edge_indices': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_edge_indices.numpy()]))
     }
 
-    # 创建Example
-    example = tf.train.Example(features=tf.train.Features(feature=feature))
+    # 创建TFRecord示例
+    example = tf.train.Example(features=tf.train.Features(feature=feature_dict))
     return example.SerializeToString()
 
 def mps_to_tfrecord(mps_file_path, tfrecord_file_path):
@@ -262,7 +260,7 @@ def mps_to_tfrecord(mps_file_path, tfrecord_file_path):
             return False
             
         # 3. 序列化特征
-        example = serialize_features(features['V'], features['C'], features['E']['coef'], features['E']['indices'])
+        example = serialize_features(features)
         if example is None:
             return False
             
