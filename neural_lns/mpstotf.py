@@ -210,16 +210,13 @@ def serialize_features(features):
     constraint_features = np.concatenate([
         features['C']['obj_cos_sim'],
         features['C']['bias'],
-        np.repeat(features['C']['is_tight'], 2, axis=0),  # 扩展到(852, 1)
-        np.repeat(features['C']['dualsol_val'], 2, axis=0),  # 扩展到(852, 1)
+        features['C']['is_tight'],
+        features['C']['dualsol_val'],
         features['C']['age']
     ], axis=1).astype(np.float32)
 
     # 边特征
-    edge_features = np.concatenate([
-        features['E']['coef'],
-        np.zeros_like(features['E']['coef'])  # 添加一个额外的维度
-    ], axis=1).astype(np.float32)
+    edge_features = features['E']['coef'].astype(np.float32)
 
     # 打印连接后的形状
     print("\n=== 连接后的形状 ===")
