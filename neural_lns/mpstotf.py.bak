@@ -1,4 +1,3 @@
-#b8ba6bb8-7fb3-4cc3-a5a7-f0fd32d50cf0
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -207,28 +206,13 @@ def serialize_features(features):
         features['V']['sol_val']
     ], axis=1).astype(np.float32)
 
-    # 检查并调整约束特征的维度
-    obj_cos_sim = features['C']['obj_cos_sim']  # (852, 1)
-    bias = features['C']['bias']                # (852, 1)
-    is_tight = features['C']['is_tight']        # (426, 1)
-    dualsol_val = features['C']['dualsol_val']  # (426, 1)
-    age = features['C']['age']                  # (852, 1)
-    
-    # 扩展is_tight和dualsol_val到852行
-    target_rows = obj_cos_sim.shape[0]
-    if is_tight.shape[0] < target_rows:
-        is_tight = np.concatenate([is_tight, np.zeros((target_rows - is_tight.shape[0], 1))], axis=0)
-    
-    if dualsol_val.shape[0] < target_rows:
-        dualsol_val = np.concatenate([dualsol_val, np.zeros((target_rows - dualsol_val.shape[0], 1))], axis=0)
-    
     # 约束特征
     constraint_features = np.concatenate([
-        obj_cos_sim,
-        bias,
-        is_tight,
-        dualsol_val,
-        age
+        features['C']['obj_cos_sim'],
+        features['C']['bias'],
+        features['C']['is_tight'],
+        features['C']['dualsol_val'],
+        features['C']['age']
     ], axis=1).astype(np.float32)
 
     # 边特征
