@@ -21,9 +21,9 @@ import ml_collections
 import tensorflow.compat.v2 as tf
 tf.data.experimental.enable_debug_mode()
 
-from neural_lns import mip_utils
-from neural_lns import preprocessor
-from neural_lns import solving_utils
+
+
+
 
 
 BIAS_FEATURE_INDEX = 1
@@ -190,9 +190,14 @@ def get_graphs_tuple(state: Dict[str, Any]) -> graphs.GraphsTuple:
 
 
 def get_features(
-    mip: mip_utils.MPModel,
+    mip,
     solver_params: ml_collections.ConfigDict = SCIP_FEATURE_EXTRACTION_PARAMS
     ) -> Optional[Dict[str, Any]]:
+  
+  from neural_lns import preprocessor
+  from neural_lns import mip_utils
+  from neural_lns import solving_utils
+
   """Extracts and preprocesses the features from the root of B&B tree."""
   mip_solver = solving_utils.Solver()
   presolver = preprocessor.Preprocessor()
@@ -342,7 +347,8 @@ def extract_data(state: Dict[str, Any], scale_features: bool = False):
 
   graphs_tuple = get_graphs_tuple(state)
 
-  node_indices = tf.cast(state['binary_variable_indices'], tf.int32)
+  #node_indices = tf.cast(state['binary_variable_indices'], tf.int32) //error
+  node_indices = tf.cast(state['all_integer_variable_indices'], tf.int32)
 
   # We allow filtering out instances that are invalid.
   valid_example = (tf.size(labels) > 0)

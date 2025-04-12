@@ -44,14 +44,15 @@ def get_config():
   config.eval_every_steps = 500
   config.eval_steps = 128
   config.grad_clip_norm = 1.0
+  config.load_checkpoint = False
 
   # Each entry is a pair of (<dataset_path>, <prefix>).
   config.train_datasets = [
-      ('neural_lns/data/assign1-5-8.tfrecord', 'train'),
+      ('neural_lns/data/assign.tfrecord', 'train'),
   ]
 
   config.valid_datasets = [
-      ('neural_lns/data/assign1-5-8.tfrecord', 'valid'),
+      ('neural_lns/data/assign.tfrecord', 'valid'),
   ]
   config.model_config = get_light_gnn_model_config()
   return config

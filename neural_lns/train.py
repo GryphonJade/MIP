@@ -34,6 +34,7 @@ config_flags.DEFINE_config_file(
     'Training configuration.')
 
 
+
 MIN_LEARNING_RATE = 1e-5
 
 
@@ -44,7 +45,7 @@ def train_and_evaluate(
     model_dir: str, use_tf_function: bool, decay_steps: int,
     num_train_steps: int, num_train_run_steps: int, eval_every_steps: int,
     eval_steps: int, grad_clip_norm: float,
-    model_config: ml_collections.ConfigDict):
+    model_config: ml_collections.ConfigDict,load_model: bool = False):
   """The main training and evaluation loop."""
   if eval_every_steps % num_train_run_steps != 0:
     raise ValueError(
@@ -176,13 +177,17 @@ def train_and_evaluate(
   if use_tf_function:
     train_step = tf.function(train_step)
     eval_step = tf.function(eval_step)
+    ckpt = tf.train.Checkpoint(
+        model=model, optimizer=optimizer, global_step=global_step)
+    ckpt_manager = tf.train.CheckpointManager(
+        checkpoint=ckpt, directory=model_dir, max_to_keep=5)
+  if load_model:
+    #logging.info('Loading model from %s', model_dir)
+    status=ckpt.restore(ckpt_manager.latest_checkpoint)
 
-  ckpt = tf.train.Checkpoint(
-      model=model, optimizer=optimizer, global_step=global_step)
-  ckpt_manager = tf.train.CheckpointManager(
-      checkpoint=ckpt, directory=model_dir, max_to_keep=5)
-  ckpt.restore(ckpt_manager.latest_checkpoint)
-  if ckpt_manager.latest_checkpoint:
+    #status.expect_partial()
+  
+  if load_model and ckpt_manager.latest_checkpoint:
     logging.info('Restored from %s', ckpt_manager.latest_checkpoint)
   else:
     logging.info('Initializing from scratch.')
@@ -247,7 +252,7 @@ def main(_):
       eval_every_steps=flags_config.eval_every_steps,
       eval_steps=flags_config.eval_steps,
       grad_clip_norm=flags_config.grad_clip_norm,
-      model_config=flags_config.model_config)
+      model_config=flags_config.model_config,load_model=flags_config.load_checkpoint)
 
 
 if __name__ == '__main__':
