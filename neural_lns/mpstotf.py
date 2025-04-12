@@ -170,7 +170,12 @@ def extract_features(mip):
         #     features['best_solution_labels'] = np.zeros(
         #         len(mip.variable), dtype=np.float32
         #     )
-        features['best_solution_labels'] = features['solution']
+        
+        # 确保有 solution 特征，如果没有则使用零向量
+        if 'solution' in features:
+            features['best_solution_labels'] = features['solution']
+        else:
+            features['best_solution_labels'] = np.zeros(len(mip.variable), dtype=np.float32)
         
         print("特征提取成功")
         return features
@@ -193,6 +198,14 @@ def serialize_features(features):
     print("\n边特征:")
     for k, v in features['E'].items():
         print(f"{k}: {v.shape}")
+    
+    # 打印其他特征
+    print("\n其他特征:")
+    for k, v in features.items():
+        if k not in ['V', 'C', 'E']:
+            print(f"{k}: {type(v)}")
+            if hasattr(v, 'shape'):
+                print(f"  shape: {v.shape}")
 
     # 变量特征
     variable_features = np.concatenate([
@@ -275,16 +288,16 @@ def serialize_features(features):
         'constraint_features': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_constraint_features.numpy()])),
         'edge_features': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_edge_features.numpy()])),
         'edge_indices': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_edge_indices.numpy()])),
-        'variable_lbs': _float_list_feature(features['variable_lbs']),  # 所有变量的下界
-        'variable_ubs': _float_list_feature(features['variable_ubs']),  # 所有变量的上界
+        'variable_lbs': _float_list_feature(features['variable_lbs'].tolist()),  # 所有变量的下界
+        'variable_ubs': _float_list_feature(features['variable_ubs'].tolist()),  # 所有变量的上界
         'constraint_feature_names': _bytes_feature(b"features"),  # 约束特征名称
         'variable_feature_names': _bytes_feature(b"features"),  # 变量特征名称
         'edge_features_names': _bytes_feature(b"coef"),  # 边特征名称
         'variable_names': _bytes_list_feature([f"x{i}".encode() for i in range(variable_features.shape[0])]),  # 变量名称
-        'binary_variable_indices': _int64_list_feature(list(range(variable_features.shape[0]))),  # 二进制变量索引
-        'all_integer_variable_indices': _int64_list_feature(list(range(variable_features.shape[0]))),  # 所有整数变量索引
-        'model_maximize': _int64_feature(0),  # 是否为最大化问题
-        'best_solution_labels': _float_list_feature(features['best_solution_labels'])  # 最优解标签
+        'binary_variable_indices': _int64_list_feature(features['binary_variable_indices'].tolist()),  # 二进制变量索引
+        'all_integer_variable_indices': _int64_list_feature(features['all_integer_variable_indices'].tolist()),  # 所有整数变量索引
+        'model_maximize': _bool_feature(bool(features['model_maximize'])),  # 是否为最大化问题
+        'best_solution_labels': _float_list_feature(features['best_solution_labels'].tolist())  # 最优解标签
     }
 
     # 创建TFRecord示例
