@@ -11,7 +11,8 @@ from neural_lns.mip_utils import MPModel, MPVariable, MPConstraint, MPSolverResp
 from neural_lns.solving_utils import SCIPSolver, SolverState
 from neural_lns.preprocessor import SCIPPreprocessor
 import ml_collections
-
+#tf.config.run_functions_eagerly(True)
+tf.data.experimental.enable_debug_mode()
 # 特征序列化辅助函数
 def _bytes_feature(value):
     """将字节值序列化为 TFRecord 特征"""
@@ -154,7 +155,9 @@ def extract_features(mip):
                     binary_indices.append(i)
         
         features['binary_variable_indices'] = np.array(binary_indices, dtype=np.int64)
+        #print(f"二进制变量索引: {features['binary_variable_indices']}")
         features['all_integer_variable_indices'] = np.array(integer_indices, dtype=np.int64)
+        #print(f"所有整数变量索引: {features['all_integer_variable_indices']}")
         
         # 添加最优解标签
         # solver.solve(data_utils.SCIP_FEATURE_EXTRACTION_PARAMS)
@@ -173,6 +176,8 @@ def extract_features(mip):
         
         # 确保有 solution 特征，如果没有则使用零向量
         if 'solution' in features:
+            print("\n提取到 solution 特征\n")
+            #print(features['solution'])
             features['best_solution_labels'] = features['solution']
         else:
             features['best_solution_labels'] = np.zeros(len(mip.variable), dtype=np.float32)
@@ -188,24 +193,24 @@ def extract_features(mip):
 def serialize_features(features):
     """将特征序列化为TFRecord格式"""
     # 打印特征形状
-    print("\n=== 特征形状 ===")
-    print("变量特征:")
-    for k, v in features['V'].items():
-        print(f"{k}: {v.shape}")
-    print("\n约束特征:")
-    for k, v in features['C'].items():
-        print(f"{k}: {v.shape}")
-    print("\n边特征:")
-    for k, v in features['E'].items():
-        print(f"{k}: {v.shape}")
+    #print("\n=== 特征形状 ===")
+    # print("变量特征:")
+    # for k, v in features['V'].items():
+    #     print(f"{k}: {v.shape}")
+    # print("\n约束特征:")
+    # for k, v in features['C'].items():
+    #     print(f"{k}: {v.shape}")
+    # print("\n边特征:")
+    # for k, v in features['E'].items():
+    #     print(f"{k}: {v.shape}")
     
-    # 打印其他特征
-    print("\n其他特征:")
-    for k, v in features.items():
-        if k not in ['V', 'C', 'E']:
-            print(f"{k}: {type(v)}")
-            if hasattr(v, 'shape'):
-                print(f"  shape: {v.shape}")
+    # # 打印其他特征
+    # print("\n其他特征:")
+    # for k, v in features.items():
+    #     if k not in ['V', 'C', 'E']:
+    #         print(f"{k}: {type(v)}")
+    #         if hasattr(v, 'shape'):
+    #             print(f"  shape: {v.shape}")
 
     # 变量特征
     variable_features = np.concatenate([
@@ -280,8 +285,10 @@ def serialize_features(features):
     serialized_variable_features = tf.io.serialize_tensor(tf.convert_to_tensor(variable_features))
     serialized_constraint_features = tf.io.serialize_tensor(tf.convert_to_tensor(constraint_features))
     serialized_edge_features = tf.io.serialize_tensor(tf.convert_to_tensor(edge_features))
-    serialized_edge_indices = tf.io.serialize_tensor(tf.convert_to_tensor(features['E']['indices']))
+    
+    serialized_edge_indices = tf.io.serialize_tensor(tf.convert_to_tensor(np.array(features['E']['indices'], dtype=np.int64)))
 
+    #print("\n\nfeatures[best_solution_labels]:", features['best_solution_labels'])
     # 创建特征字典
     feature_dict = {
         'variable_features': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_variable_features.numpy()])),
@@ -297,7 +304,7 @@ def serialize_features(features):
         'binary_variable_indices': _int64_list_feature(features['binary_variable_indices'].tolist()),  # 二进制变量索引
         'all_integer_variable_indices': _int64_list_feature(features['all_integer_variable_indices'].tolist()),  # 所有整数变量索引
         'model_maximize': _bool_feature(bool(features['model_maximize'])),  # 是否为最大化问题
-        'best_solution_labels': _float_list_feature(features['best_solution_labels'].tolist())  # 最优解标签
+        'best_solution_labels': _float_list_feature(features['best_solution_labels'])  # 最优解标签
     }
 
     # 创建TFRecord示例
@@ -381,10 +388,12 @@ def verify_tfrecord(tfrecord_file):
         # 尝试读取一个样本
         for data in dataset.take(1):
             print("TFRecord验证成功! 数据结构:")
-            print(f"图结构: {data.graphs_tuple}")
+            #print(f"图结构: {data.graphs_tuple}")
             print(f"节点数量: {data.graphs_tuple.n_node}")
             print(f"边数量: {data.graphs_tuple.n_edge}")
             print(f"标签形状: {data.integer_labels.shape}")
+            # solution
+            print(f"solution: {data.labels}")
             return True
             
     except Exception as e:

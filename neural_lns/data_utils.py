@@ -19,6 +19,7 @@ from typing import Any, Dict, NamedTuple, Optional
 from graph_nets import graphs
 import ml_collections
 import tensorflow.compat.v2 as tf
+tf.data.experimental.enable_debug_mode()
 
 from neural_lns import mip_utils
 from neural_lns import preprocessor
@@ -310,6 +311,12 @@ def decode_fn(record_bytes):
       example['constraint_features'])[0], out_type=tf.float32)
   parsed_example['edge_indices'] = tf.io.parse_tensor(tf.sparse.to_dense(
       example['edge_indices'])[0], out_type=tf.int64)
+  # edge_indices = tf.io.parse_tensor(
+  #       tf.sparse.to_dense(example['edge_indices'])[0], 
+  #       out_type=tf.int32  # 原始存储为 int32
+  #   )
+  # parsed_example['edge_indices'] = tf.cast(edge_indices, tf.int64)
+  
   parsed_example['edge_features'] = tf.io.parse_tensor(tf.sparse.to_dense(
       example['edge_features'])[0], out_type=tf.float32)
 
@@ -323,7 +330,7 @@ def decode_fn(record_bytes):
 
 def extract_data(state: Dict[str, Any], scale_features: bool = False):
   """Create a DatasetTuple for each MIP instance."""
-  num_vars = len(state['best_solution_labels'])
+  num_vars = tf.shape(state['best_solution_labels'])[0]
   labels = tf.reshape(state['best_solution_labels'], [num_vars, -1])
 
   if scale_features:
@@ -345,6 +352,8 @@ def extract_data(state: Dict[str, Any], scale_features: bool = False):
     int_labels = tf.cast(tf.round(int_labels), tf.int32)
     int_labels = tf.cast(tf.expand_dims(int_labels, axis=-1), tf.int32)
   else:
+    #tf.print('Invalid example: {}'.format(state))
+    #assert(0 < 0), 'Invalid example: {}'.format(state)
     int_labels = tf.constant([], shape=[0, 0, 0], dtype=tf.int32)
     labels = tf.constant([], shape=[0, 0], dtype=tf.float32)
 
