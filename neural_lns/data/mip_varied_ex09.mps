@@ -17,7 +17,7 @@ RHS
     RHS1     C1        8
     RHS1     C2        4
 BOUNDS
- BV BND1     X1
+ BV BND1     X1     
  BV BND1     X2
  BV BND1     X3
 ENDATA

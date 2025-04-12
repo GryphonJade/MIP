@@ -129,7 +129,9 @@ class SCIPSolver(Solver):
             if not self._mip.check_feature_completeness(features, check_dynamic=True):
                 print("警告:动态特征提取不完整")
                 return None
-                
+            features['solution'] = solution
+            print('features:', features)
+            #print(features)
             return features
             
         except Exception as e:

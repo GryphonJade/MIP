@@ -157,24 +157,26 @@ def extract_features(mip):
         features['all_integer_variable_indices'] = np.array(integer_indices, dtype=np.int64)
         
         # 添加最优解标签
-        solver.solve(data_utils.SCIP_FEATURE_EXTRACTION_PARAMS)
-        solution = solver.get_best_solution()
-        if solution and solution.status in {
-            MPSolverResponseStatus.OPTIMAL,
-            MPSolverResponseStatus.FEASIBLE
-        }:
-            features['best_solution_labels'] = np.array(
-                solution.variable_value, dtype=np.float32
-            )
-        else:
-            features['best_solution_labels'] = np.zeros(
-                len(mip.variable), dtype=np.float32
-            )
+        # solver.solve(data_utils.SCIP_FEATURE_EXTRACTION_PARAMS)
+        # solution = solver.get_best_solution()
+        # if solution and solution.status in {
+        #     MPSolverResponseStatus.OPTIMAL,
+        #     MPSolverResponseStatus.FEASIBLE
+        # }:
+        #     features['best_solution_labels'] = np.array(
+        #         solution.variable_value, dtype=np.float32
+        #     )
+        # else:
+        #     features['best_solution_labels'] = np.zeros(
+        #         len(mip.variable), dtype=np.float32
+        #     )
+        features['best_solution_labels'] = features['solution']
         
         print("特征提取成功")
         return features
         
     except Exception as e:
+        
         print(f"特征提取过程中出错: {e}")
         return None
 
@@ -204,7 +206,7 @@ def serialize_features(features):
         features['V']['basis_status'],
         features['V']['reduced_cost'],
         features['V']['age'],
-        features['V']['sol_val']
+        features['V']['sol_val'],
     ], axis=1).astype(np.float32)
 
     # 检查并调整约束特征的维度
@@ -273,16 +275,16 @@ def serialize_features(features):
         'constraint_features': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_constraint_features.numpy()])),
         'edge_features': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_edge_features.numpy()])),
         'edge_indices': tf.train.Feature(bytes_list=tf.train.BytesList(value=[serialized_edge_indices.numpy()])),
-        'variable_lbs': _float_list_feature([0.0] * variable_features.shape[0]),  # 所有变量的下界
-        'variable_ubs': _float_list_feature([1.0] * variable_features.shape[0]),  # 所有变量的上界
+        'variable_lbs': _float_list_feature(features['variable_lbs']),  # 所有变量的下界
+        'variable_ubs': _float_list_feature(features['variable_ubs']),  # 所有变量的上界
         'constraint_feature_names': _bytes_feature(b"features"),  # 约束特征名称
         'variable_feature_names': _bytes_feature(b"features"),  # 变量特征名称
         'edge_features_names': _bytes_feature(b"coef"),  # 边特征名称
         'variable_names': _bytes_list_feature([f"x{i}".encode() for i in range(variable_features.shape[0])]),  # 变量名称
         'binary_variable_indices': _int64_list_feature(list(range(variable_features.shape[0]))),  # 二进制变量索引
         'all_integer_variable_indices': _int64_list_feature(list(range(variable_features.shape[0]))),  # 所有整数变量索引
-        'model_maximize': _bool_feature(False),  # 是否为最大化问题
-        'best_solution_labels': _float_list_feature([0.0] * variable_features.shape[0])  # 最优解标签
+        'model_maximize': _int64_feature(0),  # 是否为最大化问题
+        'best_solution_labels': _float_list_feature(features['best_solution_labels'])  # 最优解标签
     }
 
     # 创建TFRecord示例
